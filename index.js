@@ -15,9 +15,9 @@ const app = new App({
 
 // Slash command handler
 app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
-  await ack();
-
   try {
+    await ack(); // Acknowledge immediately to avoid timeout
+
     await client.views.open({
       trigger_id: body.trigger_id,
       view: {
@@ -110,7 +110,7 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
   }
 });
 
-// Start server
+// Start the app
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
