@@ -82,7 +82,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 • On-call: TBD
 • Deployment: TBD`;
 
-  const fallbackChannel = '#noc-escalations';
+  const fallbackChannel = '#noc-escalations','noc-escalation-test';
 
   await client.chat.postMessage({ channel: fallbackChannel, text: message });
 });
