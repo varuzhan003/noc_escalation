@@ -1,22 +1,27 @@
-const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
+const { App, ExpressReceiver } = require('@slack/bolt');
 
-// Create ExpressReceiver with custom endpoint
+// Create a custom receiver with /slack/events endpoint
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events'
 });
 
-// Initialize Bolt App with the receiver
+// Initialize the Bolt app
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver
 });
 
-// Slash command handler
-app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
+// Slash command listener
+app.command('/noc_escalation', async ({ ack, respond, body, client, logger }) => {
   try {
-    await ack(); // Acknowledge immediately to avoid timeout
+    await ack(); // Acknowledge quickly
+
+    await respond({
+      response_type: 'ephemeral',
+      text: 'Opening escalation modal...'
+    });
 
     await client.views.open({
       trigger_id: body.trigger_id,
@@ -72,7 +77,7 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
       }
     });
   } catch (error) {
-    logger.error('Error opening modal:', error);
+    logger.error('❌ Error in /noc_escalation handler:', error);
   }
 });
 
@@ -103,14 +108,16 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
 • On-call: _TBD_
 • Deployment: _TBD_`;
 
-    const fallbackChannel = '#noc-escalation-test';
-    await client.chat.postMessage({ channel: fallbackChannel, text: message });
+    await client.chat.postMessage({
+      channel: '#noc-escalation-test',
+      text: message
+    });
   } catch (error) {
-    logger.error('Error handling modal submission:', error);
+    logger.error('❌ Error handling modal submit:', error);
   }
 });
 
-// Start the app
+// Start the server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
