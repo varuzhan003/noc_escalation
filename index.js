@@ -1,28 +1,23 @@
-require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
+require('dotenv').config();
 
-// Create a custom receiver with /slack/events endpoint
+// Create custom ExpressReceiver with correct event endpoint
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  endpoints: '/slack/events'
+  endpoints: '/slack/events',
 });
 
-// Initialize the Bolt app
+// Create Bolt app with the receiver
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  receiver
+  receiver,
 });
 
-// Slash command listener
-app.command('/noc_escalation', async ({ ack, respond, body, client, logger }) => {
+// Handle /noc_escalation command
+app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
+  await ack();
+
   try {
-    await ack(); // Acknowledge quickly
-
-    await respond({
-      response_type: 'ephemeral',
-      text: 'Opening escalation modal...'
-    });
-
     await client.views.open({
       trigger_id: body.trigger_id,
       view: {
@@ -39,8 +34,8 @@ app.command('/noc_escalation', async ({ ack, respond, body, client, logger }) =>
             element: {
               type: 'plain_text_input',
               action_id: 'service_input',
-              placeholder: { type: 'plain_text', text: 'e.g. service-audio-pipeline' }
-            }
+              placeholder: { type: 'plain_text', text: 'e.g. service-audio-pipeline' },
+            },
           },
           {
             type: 'input',
@@ -48,8 +43,8 @@ app.command('/noc_escalation', async ({ ack, respond, body, client, logger }) =>
             label: { type: 'plain_text', text: 'Summary of the issue' },
             element: {
               type: 'plain_text_input',
-              action_id: 'summary_input'
-            }
+              action_id: 'summary_input',
+            },
           },
           {
             type: 'input',
@@ -57,8 +52,8 @@ app.command('/noc_escalation', async ({ ack, respond, body, client, logger }) =>
             label: { type: 'plain_text', text: 'Datadog Monitor Link' },
             element: {
               type: 'plain_text_input',
-              action_id: 'monitor_input'
-            }
+              action_id: 'monitor_input',
+            },
           },
           {
             type: 'input',
@@ -67,21 +62,21 @@ app.command('/noc_escalation', async ({ ack, respond, body, client, logger }) =>
             element: {
               type: 'static_select',
               action_id: 'urgency_input',
-              options: ['Low', 'Medium', 'High'].map(level => ({
+              options: ['Low', 'Medium', 'High'].map((level) => ({
                 text: { type: 'plain_text', text: level },
-                value: level.toLowerCase()
-              }))
-            }
-          }
-        ]
-      }
+                value: level.toLowerCase(),
+              })),
+            },
+          },
+        ],
+      },
     });
   } catch (error) {
-    logger.error('❌ Error in /noc_escalation handler:', error);
+    logger.error('Error opening modal:', error);
   }
 });
 
-// Modal submission handler
+// Handle modal submission
 app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
   await ack();
 
@@ -108,16 +103,17 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
 • On-call: _TBD_
 • Deployment: _TBD_`;
 
+    const fallbackChannel = '#noc-escalation-test';
     await client.chat.postMessage({
-      channel: '#noc-escalation-test',
-      text: message
+      channel: fallbackChannel,
+      text: message,
     });
   } catch (error) {
-    logger.error('❌ Error handling modal submit:', error);
+    logger.error('Error handling modal submission:', error);
   }
 });
 
-// Start the server
+// Start app
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
