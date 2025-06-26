@@ -1,21 +1,20 @@
 const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 
-// Create an ExpressReceiver for custom port and routing
+// Custom ExpressReceiver for direct control
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
 });
 
-// Create the Bolt app
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver,
 });
 
-// Slash command handler
-app.command('/escalate', async ({ ack, body, client }) => {
-  ack(); // Respond immediately to Slack
+// Updated slash command: /noc_escalation
+app.command('/noc_escalation', async ({ ack, body, client }) => {
+  ack(); // Respond quickly to avoid Slack timeout
 
   try {
     await client.views.open({
@@ -72,7 +71,7 @@ app.command('/escalate', async ({ ack, body, client }) => {
 
 // Modal submission handler
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
-  await ack(); // Acknowledge the modal submission
+  await ack();
 
   try {
     const userId = body.user.id;
@@ -108,7 +107,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   }
 });
 
-// Start the Express server
+// Start the app
 receiver.app.listen(process.env.PORT || 3000, () => {
   console.log('⚡️ noc_escalation is running!');
 });
