@@ -1,21 +1,21 @@
 const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 
-// Create a custom receiver to handle /slack/events path
+// Set up the ExpressReceiver to listen on /slack/events
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  endpoints: '/slack/events'
+  endpoints: '/slack/events',
 });
 
-// Initialize Slack app with the receiver
+// Create the Bolt app with the receiver
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  receiver
+  receiver,
 });
 
-// Slash command: /noc_escalation
+// Handle the /noc_escalation slash command
 app.command('/noc_escalation', async ({ ack, body, client }) => {
-  await ack(); // Acknowledge immediately
+  await ack(); // Acknowledge right away to avoid timeout
 
   try {
     await client.views.open({
@@ -76,16 +76,16 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
   }
 });
 
-// Handle modal submission
+// Handle the modal submission
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
-  await ack(); // Acknowledge first to avoid timeout
+  await ack(); // Acknowledge modal submission
 
   try {
     const userId = body.user.id;
     const service = view.state.values.service_block.service_input.value;
     const summary = view.state.values.summary_block.summary_input.value;
     const monitorLink = view.state.values.monitor_block.monitor_input.value;
-    const urgency = view.state.values.urgency_block.urgency_input.selected_option?.text.text || 'Not specified';
+    const urgency = view.state.values.urgency_block.urgency_input.selected_option.text.text;
 
     const message = `*🚨 New Escalation Alert*\n
 *Reporter:* <@${userId}>
@@ -104,18 +104,16 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 • Deployment: _TBD_`;
 
     const fallbackChannel = '#noc-escalation-test';
-
     await client.chat.postMessage({
       channel: fallbackChannel,
       text: message
     });
-
   } catch (error) {
-    console.error('Error submitting escalation:', error);
+    console.error('Error handling modal submission:', error);
   }
 });
 
-// Start the app server
+// Start the server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
