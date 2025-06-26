@@ -1,20 +1,21 @@
 const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 
-// Custom ExpressReceiver for direct control
+// Create a custom receiver to handle /slack/events path
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
-  endpoints: '/slack/events',
+  endpoints: '/slack/events'
 });
 
+// Initialize Slack app with the receiver
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  receiver,
+  receiver
 });
 
-// Updated slash command: /noc_escalation
+// Slash command: /noc_escalation
 app.command('/noc_escalation', async ({ ack, body, client }) => {
-  ack(); // Respond quickly to avoid Slack timeout
+  await ack(); // Acknowledge immediately
 
   try {
     await client.views.open({
@@ -40,13 +41,19 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
             type: 'input',
             block_id: 'summary_block',
             label: { type: 'plain_text', text: 'Summary of the issue' },
-            element: { type: 'plain_text_input', action_id: 'summary_input' }
+            element: {
+              type: 'plain_text_input',
+              action_id: 'summary_input'
+            }
           },
           {
             type: 'input',
             block_id: 'monitor_block',
             label: { type: 'plain_text', text: 'Datadog Monitor Link' },
-            element: { type: 'plain_text_input', action_id: 'monitor_input' }
+            element: {
+              type: 'plain_text_input',
+              action_id: 'monitor_input'
+            }
           },
           {
             type: 'input',
@@ -69,16 +76,16 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
   }
 });
 
-// Modal submission handler
+// Handle modal submission
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
-  await ack();
+  await ack(); // Acknowledge first to avoid timeout
 
   try {
     const userId = body.user.id;
     const service = view.state.values.service_block.service_input.value;
     const summary = view.state.values.summary_block.summary_input.value;
     const monitorLink = view.state.values.monitor_block.monitor_input.value;
-    const urgency = view.state.values.urgency_block.urgency_input.selected_option.text.text;
+    const urgency = view.state.values.urgency_block.urgency_input.selected_option?.text.text || 'Not specified';
 
     const message = `*🚨 New Escalation Alert*\n
 *Reporter:* <@${userId}>
@@ -100,14 +107,17 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 
     await client.chat.postMessage({
       channel: fallbackChannel,
-      text: message,
+      text: message
     });
+
   } catch (error) {
-    console.error('Error posting escalation message:', error);
+    console.error('Error submitting escalation:', error);
   }
 });
 
-// Start the app
-receiver.app.listen(process.env.PORT || 3000, () => {
-  console.log('⚡️ noc_escalation is running!');
-});
+// Start the app server
+(async () => {
+  const port = process.env.PORT || 3000;
+  await app.start(port);
+  console.log(`⚡️ noc_escalation is running on port ${port}`);
+})();
