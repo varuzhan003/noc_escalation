@@ -2,7 +2,6 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 const axios = require('axios');
 
-// ExpressReceiver with Slack endpoint
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
@@ -13,7 +12,7 @@ const app = new App({
   receiver,
 });
 
-// Slash command: open modal
+// Slash command handler
 app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
   console.log('✅ Slash command received');
   await ack();
@@ -78,10 +77,10 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
   }
 });
 
-// Dynamic search handler for external_select
+// Dynamic search for external_select
 app.options('service_input', async ({ options, ack, logger }) => {
   const search = options.value || '';
-  console.log(`🔍 Received external_select search: "${search}"`);
+  console.log(`🔍 Incoming search: "${search}"`);
 
   try {
     const response = await axios.get(
@@ -99,9 +98,10 @@ app.options('service_input', async ({ options, ack, logger }) => {
     );
 
     const services = response.data.services || [];
-    console.log(`✅ PagerDuty returned ${services.length} services for "${search}"`);
+    console.log(`✅ Raw returned services:`);
+    services.forEach(s => console.log(`  - ${s.name}`));
 
-    const optionsToSend = services.slice(0, 100).map(service => ({
+    const optionsToSend = services.map(service => ({
       text: { type: 'plain_text', text: service.name },
       value: service.id,
     }));
@@ -109,12 +109,12 @@ app.options('service_input', async ({ options, ack, logger }) => {
     console.log(`✅ Sending ${optionsToSend.length} options to Slack`);
     await ack({ options: optionsToSend });
   } catch (error) {
-    logger.error('❌ Error in external_select handler:', error);
+    console.error('❌ PagerDuty API error:', error);
     await ack({ options: [] });
   }
 });
 
-// Modal submit handler
+// Modal submit
 app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
   console.log('✅ Modal submit received');
   await ack();
@@ -153,5 +153,5 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation with external_select running on port ${port}`);
+  console.log(`⚡️ noc_escalation fully debugged on port ${port}`);
 })();
