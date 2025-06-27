@@ -2,7 +2,7 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 const axios = require('axios');
 
-// ExpressReceiver for events
+// ExpressReceiver for Slack events
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
@@ -13,7 +13,7 @@ const app = new App({
   receiver,
 });
 
-// Slash command to open modal
+// Slash command opens modal
 app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
   console.log('✅ Slash command received');
   await ack();
@@ -35,9 +35,9 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
             element: {
               type: 'external_select',
               action_id: 'service_input',
-              placeholder: { type: 'plain_text', text: 'Search for a service...' },
-              min_query_length: 2
-            }
+              placeholder: { type: 'plain_text', text: 'Type 2+ letters...' },
+              min_query_length: 2,
+            },
           },
           {
             type: 'input',
@@ -45,109 +45,86 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
             label: { type: 'plain_text', text: 'Summary' },
             element: {
               type: 'plain_text_input',
-              action_id: 'summary_input'
-            }
+              action_id: 'summary_input',
+            },
           },
-          {
-            type: 'input',
-            block_id: 'monitor_block',
-            label: { type: 'plain_text', text: 'Datadog Monitor Link' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'monitor_input'
-            }
-          },
-          {
-            type: 'input',
-            block_id: 'urgency_block',
-            label: { type: 'plain_text', text: 'Urgency' },
-            element: {
-              type: 'static_select',
-              action_id: 'urgency_input',
-              options: ['Low', 'Medium', 'High'].map(level => ({
-                text: { type: 'plain_text', text: level },
-                value: level.toLowerCase()
-              }))
-            }
-          }
-        ]
-      }
+        ],
+      },
     });
   } catch (err) {
-    logger.error('❌ Error opening modal:', err);
+    console.error('❌ Modal open error:', err);
   }
 });
 
-// External select handler — returns matching services
+// options handler for external select
 app.options({ action_id: 'service_input' }, async ({ options, ack, logger }) => {
-  const search = options.value || '';
-  console.log(`✅ External select triggered, search: "${search}"`);
+  const searchTerm = options.value || '';
+  console.log(`🔍 options() called. Search term: "${searchTerm}"`);
+
+  // If user types 'test', return fake guaranteed options
+  if (searchTerm.toLowerCase() === 'test') {
+    console.log(`✅ Returning STATIC fallback option`);
+    return ack({
+      options: [
+        {
+          text: { type: 'plain_text', text: 'STATIC TEST SERVICE' },
+          value: 'static-test-id',
+        },
+      ],
+    });
+  }
 
   try {
     const response = await axios.get('https://api.pagerduty.com/services', {
       headers: {
         Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-        Accept: 'application/vnd.pagerduty+json;version=2'
+        Accept: 'application/vnd.pagerduty+json;version=2',
       },
       params: {
-        query: search,
-        limit: 100
-      }
+        query: searchTerm,
+        limit: 25,
+      },
     });
 
     const services = response.data.services || [];
-    console.log(`✅ PagerDuty returned ${services.length} services`);
+    console.log(`✅ PagerDuty returned ${services.length} services for "${searchTerm}"`);
 
-    const formattedOptions = services.map(s => ({
+    const formatted = services.map((s) => ({
       text: { type: 'plain_text', text: s.name },
-      value: s.id
+      value: s.id,
     }));
 
-    console.log(`✅ Returning ${formattedOptions.length} options`);
-    await ack({ options: formattedOptions });
+    console.log(`✅ Returning ${formatted.length} options back to Slack`);
+    await ack({ options: formatted });
 
   } catch (err) {
-    console.error('❌ Error fetching services:', err);
+    console.error('❌ Error fetching PD services:', err);
     await ack({ options: [] });
   }
 });
 
-// Modal submission — posts message
-app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
-  console.log('✅ Modal submitted');
+// submit handler for modal
+app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
+  console.log('✅ Modal submitted');
 
   const userId = body.user.id;
-  const serviceName = view.state.values.service_block.service_input.selected_option.text.text;
+  const selectedService = view.state.values.service_block.service_input.selected_option?.text.text || 'N/A';
   const summary = view.state.values.summary_block.summary_input.value;
-  const monitorLink = view.state.values.monitor_block.monitor_input.value;
-  const urgency = view.state.values.urgency_block.urgency_input.selected_option.text.text;
 
-  const message = `*🚨 New Escalation Alert*\n
-*Reporter:* <@${userId}>
-*Service:* ${serviceName}
-*Summary:* ${summary}
-*Urgency:* ${urgency}
-
-*🔗 Links:*
-• <${monitorLink}|Datadog Monitor>
-
-*🧠 Context:*
-• Owner Team: _TBD_
-• On-call: _TBD_
-• Deployment: _TBD_`;
+  const msg = `*🚨 Escalation*\n• Reporter: <@${userId}>\n• Service: ${selectedService}\n• Summary: ${summary}`;
 
   await client.chat.postMessage({
     channel: '#noc-escalation-test',
-    text: message
+    text: msg,
   });
 
-  console.log('✅ Escalation message sent');
+  console.log('✅ Escalation message sent to channel');
 });
 
-// Start server
+// Start
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation running on port ${port}`);
+  console.log(`⚡️ noc_escalation FINAL test running on ${port}`);
 })();
