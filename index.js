@@ -2,7 +2,7 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 const axios = require('axios');
 
-// Custom ExpressReceiver for Slack Events & Interactivity
+// ExpressReceiver with Slack endpoint
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
@@ -13,7 +13,7 @@ const app = new App({
   receiver,
 });
 
-// Slash command handler: open modal
+// Slash command: open modal
 app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
   console.log('✅ Slash command received');
   await ack();
@@ -78,16 +78,12 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
   }
 });
 
-// Dynamic options handler for the external_select
+// Dynamic search handler for external_select
 app.options('service_input', async ({ options, ack, logger }) => {
   const search = options.value || '';
-  console.log(`🔍 Searching PagerDuty services for: "${search}"`);
+  console.log(`🔍 Received external_select search: "${search}"`);
 
-  const allServices = [];
-  let offset = 0;
-  const limit = 100;
-
-  while (true) {
+  try {
     const response = await axios.get(
       'https://api.pagerduty.com/services',
       {
@@ -97,29 +93,28 @@ app.options('service_input', async ({ options, ack, logger }) => {
         },
         params: {
           query: search,
-          limit,
-          offset,
+          limit: 100,
         },
       }
     );
 
-    const services = response.data.services;
-    allServices.push(...services);
+    const services = response.data.services || [];
+    console.log(`✅ PagerDuty returned ${services.length} services for "${search}"`);
 
-    if (services.length < limit) break;
-    offset += limit;
+    const optionsToSend = services.slice(0, 100).map(service => ({
+      text: { type: 'plain_text', text: service.name },
+      value: service.id,
+    }));
+
+    console.log(`✅ Sending ${optionsToSend.length} options to Slack`);
+    await ack({ options: optionsToSend });
+  } catch (error) {
+    logger.error('❌ Error in external_select handler:', error);
+    await ack({ options: [] });
   }
-
-  const optionsToSend = allServices.slice(0, 100).map(service => ({
-    text: { type: 'plain_text', text: service.name },
-    value: service.id,
-  }));
-
-  console.log(`✅ Returning ${optionsToSend.length} matching services`);
-  await ack({ options: optionsToSend });
 });
 
-// Modal submission handler
+// Modal submit handler
 app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
   console.log('✅ Modal submit received');
   await ack();
@@ -158,5 +153,5 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation with dynamic PagerDuty search running on port ${port}`);
+  console.log(`⚡️ noc_escalation with external_select running on port ${port}`);
 })();
