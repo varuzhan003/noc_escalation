@@ -2,42 +2,64 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 const axios = require('axios');
 
+// ExpressReceiver for custom Slack endpoint
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
 });
 
+// Initialize Bolt app
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver,
 });
 
-// Helper: Get live services from PagerDuty
+// Helper: Fetch **all** PagerDuty services (handles pagination)
 async function getPagerDutyServices() {
-  const response = await axios.get(
-    'https://api.pagerduty.com/services',
-    {
-      headers: {
-        Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-        Accept: 'application/vnd.pagerduty+json;version=2'
-      },
-      params: { limit: 100 }
+  const allServices = [];
+  let offset = 0;
+  const limit = 100;
+
+  while (true) {
+    const response = await axios.get(
+      'https://api.pagerduty.com/services',
+      {
+        headers: {
+          Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
+          Accept: 'application/vnd.pagerduty+json;version=2',
+        },
+        params: { limit, offset },
+      }
+    );
+
+    const services = response.data.services;
+    allServices.push(...services);
+
+    console.log(`✅ Fetched ${services.length} services (offset ${offset})`);
+
+    if (services.length < limit) {
+      break; // No more pages
     }
-  );
-  return response.data.services.map(service => ({
+
+    offset += limit;
+  }
+
+  console.log(`✅ Total services loaded: ${allServices.length}`);
+
+  return allServices.map(service => ({
     text: { type: 'plain_text', text: service.name },
-    value: service.id
+    value: service.id,
   }));
 }
 
-// Slash command handler
+// Slash command: open modal
 app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
   console.log('✅ Slash command received');
   await ack();
 
   try {
     const serviceOptions = await getPagerDutyServices();
-    console.log(`✅ Loaded ${serviceOptions.length} services from PagerDuty`);
+    console.log(`✅ Building modal with ${serviceOptions.length} services`);
 
     await client.views.open({
       trigger_id: body.trigger_id,
@@ -56,8 +78,8 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
               type: 'static_select',
               action_id: 'service_input',
               placeholder: { type: 'plain_text', text: 'Pick a service...' },
-              options: serviceOptions
-            }
+              options: serviceOptions,
+            },
           },
           {
             type: 'input',
@@ -65,8 +87,8 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
             label: { type: 'plain_text', text: 'Summary' },
             element: {
               type: 'plain_text_input',
-              action_id: 'summary_input'
-            }
+              action_id: 'summary_input',
+            },
           },
           {
             type: 'input',
@@ -74,8 +96,8 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
             label: { type: 'plain_text', text: 'Datadog Monitor Link' },
             element: {
               type: 'plain_text_input',
-              action_id: 'monitor_input'
-            }
+              action_id: 'monitor_input',
+            },
           },
           {
             type: 'input',
@@ -86,20 +108,20 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
               action_id: 'urgency_input',
               options: ['Low', 'Medium', 'High'].map(level => ({
                 text: { type: 'plain_text', text: level },
-                value: level.toLowerCase()
-              }))
-            }
-          }
-        ]
-      }
+                value: level.toLowerCase(),
+              })),
+            },
+          },
+        ],
+      },
     });
 
   } catch (err) {
-    logger.error('Error opening modal:', err);
+    logger.error('❌ Error opening modal:', err);
   }
 });
 
-// Modal submit
+// Modal submission: post message
 app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
   console.log('✅ Modal submit received');
   await ack();
@@ -138,5 +160,5 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation with live PD services running on port ${port}`);
+  console.log(`⚡️ noc_escalation with full PagerDuty pagination running on port ${port}`);
 })();
