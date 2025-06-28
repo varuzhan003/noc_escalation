@@ -44,7 +44,6 @@ function buildModal(onCallTag, serviceId) {
     },
   ];
 
-  // If we have an on-call, add a context block
   if (onCallTag) {
     blocks.push({
       type: 'context',
@@ -58,7 +57,6 @@ function buildModal(onCallTag, serviceId) {
     });
   }
 
-  // Always add urgency + summary
   blocks.push(
     {
       type: 'input',
@@ -67,7 +65,7 @@ function buildModal(onCallTag, serviceId) {
       element: {
         type: 'static_select',
         action_id: 'urgency_input',
-        options: ['Low', 'Medium', 'High'].map((level) => ({
+        options: ['Low', 'Medium', 'High'].map(level => ({
           text: { type: 'plain_text', text: level },
           value: level.toLowerCase(),
         })),
@@ -91,7 +89,7 @@ function buildModal(onCallTag, serviceId) {
     submit: { type: 'plain_text', text: 'Send' },
     close: { type: 'plain_text', text: 'Cancel' },
     blocks,
-    private_metadata: JSON.stringify({ serviceId }), // store serviceId for later
+    private_metadata: JSON.stringify({ serviceId }),
   };
 }
 
@@ -125,7 +123,7 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
 
     const formatted = services.map((s) => ({
       text: { type: 'plain_text', text: s.name },
-      value: s.id, // store PD service ID as the option value
+      value: s.id,
     }));
 
     await ack({ options: formatted });
@@ -144,7 +142,7 @@ app.action('service_input', async ({ body, ack, client, action }) => {
   let onCallTag = '_No current On-call_';
 
   try {
-    // 1️⃣ Get service details to find escalation policy
+    // Get service details
     const svc = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
       headers: {
         Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
@@ -153,9 +151,9 @@ app.action('service_input', async ({ body, ack, client, action }) => {
     });
 
     const escalationPolicyId = svc.data.service.escalation_policy?.id;
+    console.log('🔍 Escalation Policy ID:', escalationPolicyId);
 
     if (escalationPolicyId) {
-      // 2️⃣ Get on-calls for this escalation policy
       const ocResp = await axios.get('https://api.pagerduty.com/oncalls', {
         headers: {
           Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
@@ -166,12 +164,30 @@ app.action('service_input', async ({ body, ack, client, action }) => {
         },
       });
 
+      console.log('🔍 Raw oncalls:', JSON.stringify(ocResp.data.oncalls, null, 2));
+
       const onCallUser = ocResp.data.oncalls[0]?.user;
-      const email = onCallUser?.email;
+      console.log('🔍 On-call user object:', onCallUser);
+
+      let email = onCallUser?.email;
+      console.log('🔍 On-call user email (direct):', email);
+
+      // If missing, fallback fetch user details
+      if (!email && onCallUser?.id) {
+        console.log(`🔍 Fallback: GET /users/${onCallUser.id}`);
+        const userResp = await axios.get(`https://api.pagerduty.com/users/${onCallUser.id}`, {
+          headers: {
+            Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
+            Accept: 'application/vnd.pagerduty+json;version=2',
+          },
+        });
+        email = userResp.data.user?.email;
+        console.log('🔍 Fallback email:', email);
+      }
 
       if (email) {
-        // 3️⃣ Lookup Slack ID by email
         const slackUser = await client.users.lookupByEmail({ email });
+        console.log('🔍 Slack lookup:', slackUser);
         if (slackUser.ok && slackUser.user.id) {
           onCallTag = `<@${slackUser.user.id}>`;
         }
@@ -183,7 +199,6 @@ app.action('service_input', async ({ body, ack, client, action }) => {
 
   console.log(`✅ On-call tag: ${onCallTag}`);
 
-  // Update modal with on-call tag
   await client.views.update({
     view_id: body.view.id,
     view: buildModal(onCallTag, serviceId),
@@ -199,16 +214,14 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   const summary = view.state.values.summary_block.summary_input.value;
   const urgency = view.state.values.urgency_block.urgency_input.selected_option?.text.text || 'N/A';
 
-  // Service name is selected text
   const serviceName = view.state.values.service_block.service_input.selected_option?.text.text || 'N/A';
 
-  // On-call tag is passed in private metadata
   let onCallTag = '_No current On-call_';
+
   try {
     const meta = JSON.parse(view.private_metadata);
     const serviceId = meta.serviceId;
 
-    // If needed, re-fetch on-call for final safety
     const svc = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
       headers: {
         Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
@@ -217,6 +230,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     });
 
     const escalationPolicyId = svc.data.service.escalation_policy?.id;
+    console.log('🔍 Final submit escalation policy:', escalationPolicyId);
 
     if (escalationPolicyId) {
       const ocResp = await axios.get('https://api.pagerduty.com/oncalls', {
@@ -229,36 +243,14 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
         },
       });
 
+      console.log('🔍 Final submit oncalls:', JSON.stringify(ocResp.data.oncalls, null, 2));
+
       const onCallUser = ocResp.data.oncalls[0]?.user;
-      const email = onCallUser?.email;
+      console.log('🔍 Final on-call user:', onCallUser);
 
-      if (email) {
-        const slackUser = await client.users.lookupByEmail({ email });
-        if (slackUser.ok && slackUser.user.id) {
-          onCallTag = `<@${slackUser.user.id}>`;
-        }
-      }
-    }
-  } catch (err) {
-    console.error('❌ On-call fallback error:', err);
-  }
+      let email = onCallUser?.email;
 
-  const result = await client.users.info({ user: userId });
-  const reporter = result.user.profile.display_name || result.user.real_name || `<@${userId}>`;
-
-  const msg = `*🚨 Escalation*\n• *Reporter:* ${reporter}\n• *Service:* ${serviceName}\n• *Urgency:* ${urgency}\n• *Summary:* ${summary}\n• *On-call:* ${onCallTag}`;
-
-  await client.chat.postMessage({
-    channel: '#noc-escalation-test',
-    text: msg,
-  });
-
-  console.log('✅ Escalation posted with on-call');
-});
-
-// Start
-(async () => {
-  const port = process.env.PORT || 3000;
-  await app.start(port);
-  console.log(`⚡️ noc_escalation FINAL with on-call running on ${port}`);
-})();
+      if (!email && onCallUser?.id) {
+        const userResp = await axios.get(`https://api.pagerduty.com/users/${onCallUser.id}`, {
+          headers: {
+            Auth
