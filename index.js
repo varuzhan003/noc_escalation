@@ -35,8 +35,21 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
             element: {
               type: 'external_select',
               action_id: 'service_input',
-              placeholder: { type: 'plain_text', text: 'Type 2+ letters...' },
+              placeholder: { type: 'plain_text', text: 'Search services...' },
               min_query_length: 2,
+            },
+          },
+          {
+            type: 'input',
+            block_id: 'urgency_block',
+            label: { type: 'plain_text', text: 'Urgency' },
+            element: {
+              type: 'static_select',
+              action_id: 'urgency_input',
+              options: ['Low', 'Medium', 'High'].map(level => ({
+                text: { type: 'plain_text', text: level },
+                value: level.toLowerCase(),
+              })),
             },
           },
           {
@@ -56,12 +69,11 @@ app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
   }
 });
 
-// options handler for external select
+// Options handler for external select
 app.options({ action_id: 'service_input' }, async ({ options, ack, logger }) => {
   const searchTerm = options.value || '';
   console.log(`🔍 options() called. Search term: "${searchTerm}"`);
 
-  // If user types 'test', return fake guaranteed options
   if (searchTerm.toLowerCase() === 'test') {
     console.log(`✅ Returning STATIC fallback option`);
     return ack({
@@ -103,16 +115,21 @@ app.options({ action_id: 'service_input' }, async ({ options, ack, logger }) => 
   }
 });
 
-// submit handler for modal
+// Submit handler for modal
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
   console.log('✅ Modal submitted');
 
   const userId = body.user.id;
   const selectedService = view.state.values.service_block.service_input.selected_option?.text.text || 'N/A';
+  const urgency = view.state.values.urgency_block.urgency_input.selected_option?.text.text || 'N/A';
   const summary = view.state.values.summary_block.summary_input.value;
 
-  const msg = `*🚨 Escalation*\n• Reporter: <@${userId}>\n• Service: ${selectedService}\n• Summary: ${summary}`;
+  // Get real display name
+  const userInfo = await client.users.info({ user: userId });
+  const displayName = userInfo.user.profile.display_name || userInfo.user.real_name || `<@${userId}>`;
+
+  const msg = `*🚨 Escalation*\n• *Reporter:* ${displayName}\n• *Service:* ${selectedService}\n• *Urgency:* ${urgency}\n• *Summary:* ${summary}`;
 
   await client.chat.postMessage({
     channel: '#noc-escalation-test',
