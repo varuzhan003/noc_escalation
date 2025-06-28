@@ -21,7 +21,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
   try {
     await client.views.open({
       trigger_id: body.trigger_id,
-      view: buildModal('', ''),
+      view: buildModal('', '', ''),
     });
   } catch (err) {
     console.error('❌ Modal open error:', err);
@@ -29,7 +29,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
 });
 
 // Build modal blocks
-function buildModal(onCallTag, serviceId) {
+function buildModal(onCallTag, serviceId, serviceName) {
   const blocks = [
     {
       type: 'input',
@@ -89,7 +89,7 @@ function buildModal(onCallTag, serviceId) {
     submit: { type: 'plain_text', text: 'Send' },
     close: { type: 'plain_text', text: 'Cancel' },
     blocks,
-    private_metadata: JSON.stringify({ serviceId }),
+    private_metadata: JSON.stringify({ serviceId, onCallTag, serviceName }),
   };
 }
 
@@ -139,6 +139,7 @@ app.action('service_input', async ({ body, ack, client, action }) => {
   console.log(`🔁 Service selected: ${action.selected_option.value}`);
 
   const serviceId = action.selected_option.value;
+  const serviceName = action.selected_option.text.text;
   let onCallTag = '_No current On-call_';
 
   try {
@@ -199,7 +200,7 @@ app.action('service_input', async ({ body, ack, client, action }) => {
 
   await client.views.update({
     view_id: body.view.id,
-    view: buildModal(onCallTag, serviceId),
+    view: buildModal(onCallTag, serviceId, serviceName),
   });
 });
 
@@ -211,56 +212,20 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   const userId = body.user.id;
   const summary = view.state.values.summary_block.summary_input.value;
   const urgency = view.state.values.urgency_block.urgency_input.selected_option?.text.text || 'N/A';
-  const serviceName = view.state.values.service_block.service_input.selected_option?.text.text || 'N/A';
+
+  let serviceName = view.state.values.service_block.service_input.selected_option?.text.text || 'N/A';
 
   let onCallTag = '_No current On-call_';
-
   try {
     const meta = JSON.parse(view.private_metadata);
-    const serviceId = meta.serviceId;
-
-    const svc = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
-      headers: {
-        Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-        Accept: 'application/vnd.pagerduty+json;version=2',
-      },
-    });
-
-    const escalationPolicyId = svc.data.service.escalation_policy?.id;
-
-    if (escalationPolicyId) {
-      const ocResp = await axios.get('https://api.pagerduty.com/oncalls', {
-        headers: {
-          Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-          Accept: 'application/vnd.pagerduty+json;version=2',
-        },
-        params: {
-          escalation_policy_ids: escalationPolicyId,
-        },
-      });
-
-      const onCallUser = ocResp.data.oncalls[0]?.user;
-      let email = onCallUser?.email;
-
-      if (!email && onCallUser?.id) {
-        const userResp = await axios.get(`https://api.pagerduty.com/users/${onCallUser.id}`, {
-          headers: {
-            Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-            Accept: 'application/vnd.pagerduty+json;version=2',
-          },
-        });
-        email = userResp.data.user?.email;
-      }
-
-      if (email) {
-        const slackUser = await client.users.lookupByEmail({ email });
-        if (slackUser.ok && slackUser.user.id) {
-          onCallTag = `<@${slackUser.user.id}>`;
-        }
-      }
+    if (meta && meta.onCallTag) {
+      onCallTag = meta.onCallTag;
+    }
+    if (meta && meta.serviceName) {
+      serviceName = meta.serviceName;
     }
   } catch (err) {
-    console.error('❌ On-call fallback error:', err);
+    console.error('❌ Error reading metadata:', err);
   }
 
   const result = await client.users.info({ user: userId });
@@ -280,5 +245,5 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation FINAL DEBUG running on ${port}`);
+  console.log(`⚡️ noc_escalation FINAL running on ${port}`);
 })();
