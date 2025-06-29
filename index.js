@@ -2,7 +2,6 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 const axios = require('axios');
 
-// ExpressReceiver
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
@@ -13,23 +12,8 @@ const app = new App({
   receiver,
 });
 
-let allChannels = [];
-
-// Fetch all channels once at startup
-(async () => {
-  const result = await app.client.conversations.list({
-    token: process.env.SLACK_BOT_TOKEN,
-    types: 'public_channel,private_channel',
-    limit: 1000,
-  });
-
-  allChannels = result.channels.map((c) => ({
-    id: c.id,
-    name: c.name,
-  }));
-
-  console.log(`✅ Cached ${allChannels.length} channels`);
-})();
+// Keep each user's channels in memory for 5 mins max
+const userChannelCache = new Map();
 
 // Slash command → open modal
 app.command('/noc_escalation', async ({ ack, body, client }) => {
@@ -41,6 +25,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
     view: {
       type: 'modal',
       callback_id: 'escalate_modal',
+      private_metadata: body.user.id, // Pass reporter user ID for options handler
       title: { type: 'plain_text', text: 'NOC Escalation' },
       submit: { type: 'plain_text', text: 'Send' },
       close: { type: 'plain_text', text: 'Cancel' },
@@ -59,7 +44,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
         {
           type: 'input',
           block_id: 'channel_block',
-          label: { type: 'plain_text', text: 'Channel to Escalate' },
+          label: { type: 'plain_text', text: 'Channel to Escalate (only your channels)' },
           element: {
             type: 'external_select',
             action_id: 'channel_input',
@@ -103,16 +88,35 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   await ack({ options: formatted });
 });
 
-// Channel options handler
-app.options({ action_id: 'channel_input' }, async ({ options, ack }) => {
+// Channel options handler — only channels user is in
+app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client }) => {
   const search = (options.value || '').toLowerCase();
-  console.log(`🔍 options() channels: "${search}"`);
+  const reporterId = body.view.private_metadata;
+  console.log(`🔍 options() channels for user ${reporterId}: "${search}"`);
 
   if (search.length < 3) {
     return ack({ options: [] });
   }
 
-  const filtered = allChannels
+  let userChannels = userChannelCache.get(reporterId);
+
+  if (!userChannels) {
+    console.log(`⏳ Fetching channels for user ${reporterId}`);
+    const userConvos = await client.users.conversations({
+      user: reporterId,
+      types: 'public_channel,private_channel',
+      limit: 1000,
+    });
+    userChannels = userConvos.channels.map((c) => ({
+      id: c.id,
+      name: c.name,
+    }));
+    userChannelCache.set(reporterId, userChannels);
+    setTimeout(() => userChannelCache.delete(reporterId), 5 * 60 * 1000); // 5 min cache
+    console.log(`✅ Cached ${userChannels.length} channels for user`);
+  }
+
+  const filtered = userChannels
     .filter((c) => c.name.includes(search))
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, 100)
@@ -133,7 +137,6 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   const userId = body.user.id;
   const selected = view.state.values.service_block.service_input.selected_option.value;
   const [serviceId, serviceName] = selected.split(':::');
-
   const channelId = view.state.values.channel_block.channel_input.selected_option.value;
   const summary = view.state.values.summary_block.summary_input.value;
 
@@ -141,14 +144,13 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   console.log(`✅ Final: Service Name: ${serviceName}`);
   console.log(`✅ Final: Channel ID: ${channelId}`);
 
-  // Get escalation policy
+  // Escalation policy
   const serviceRes = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
     headers: {
       Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
       Accept: 'application/vnd.pagerduty+json;version=2',
     },
   });
-
   const escalationPolicyId = serviceRes.data.service.escalation_policy?.id;
   console.log(`✅ Final: Escalation policy: ${escalationPolicyId}`);
 
@@ -178,20 +180,16 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       try {
         const slackUser = await client.users.lookupByEmail({ email: pdEmail });
         slackTag = `<@${slackUser.user.id}>`;
-        console.log(`✅ Found Slack for ${name} via ${pdEmail}`);
       } catch {
         try {
           const slackUser2 = await client.users.lookupByEmail({ email: altEmail });
           slackTag = `<@${slackUser2.user.id}>`;
-          console.log(`✅ Fallback Slack for ${name} via ${altEmail}`);
         } catch {
           console.log(`❌ No Slack match for ${name}`);
         }
       }
 
-      if (slackTag) {
-        oncallTags.push(slackTag);
-      }
+      if (slackTag) oncallTags.push(slackTag);
     }
   }
 
@@ -208,12 +206,12 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     text: message,
   });
 
-  console.log('✅ Escalation posted with on-calls to selected channel');
+  console.log('✅ Escalation posted only to user’s channel');
 });
 
 // Start server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation with CHANNEL SELECT running on ${port}`);
+  console.log(`⚡️ noc_escalation — channels: only user’s membership on ${port}`);
 })();
