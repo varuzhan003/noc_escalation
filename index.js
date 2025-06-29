@@ -12,7 +12,6 @@ const app = new App({
   receiver,
 });
 
-// Keep each user's channels in memory for 5 mins max
 const userChannelCache = new Map();
 
 // Slash command → open modal
@@ -25,7 +24,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
     view: {
       type: 'modal',
       callback_id: 'escalate_modal',
-      private_metadata: body.user.id, // Pass reporter user ID for options handler
+      private_metadata: body.user_id, // ✅ Correct field!
       title: { type: 'plain_text', text: 'NOC Escalation' },
       submit: { type: 'plain_text', text: 'Send' },
       close: { type: 'plain_text', text: 'Cancel' },
@@ -44,7 +43,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
         {
           type: 'input',
           block_id: 'channel_block',
-          label: { type: 'plain_text', text: 'Channel to Escalate (only your channels)' },
+          label: { type: 'plain_text', text: 'Channel to Escalate (your channels)' },
           element: {
             type: 'external_select',
             action_id: 'channel_input',
@@ -112,7 +111,7 @@ app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client 
       name: c.name,
     }));
     userChannelCache.set(reporterId, userChannels);
-    setTimeout(() => userChannelCache.delete(reporterId), 5 * 60 * 1000); // 5 min cache
+    setTimeout(() => userChannelCache.delete(reporterId), 5 * 60 * 1000);
     console.log(`✅ Cached ${userChannels.length} channels for user`);
   }
 
@@ -144,7 +143,6 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   console.log(`✅ Final: Service Name: ${serviceName}`);
   console.log(`✅ Final: Channel ID: ${channelId}`);
 
-  // Escalation policy
   const serviceRes = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
     headers: {
       Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
@@ -213,5 +211,5 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation — channels: only user’s membership on ${port}`);
+  console.log(`⚡️ noc_escalation — only user’s channels running on ${port}`);
 })();
