@@ -12,88 +12,78 @@ const app = new App({
   receiver,
 });
 
-app.command('/noc_escalation', async ({ ack, body, client, logger }) => {
+app.command('/noc_escalation', async ({ ack, body, client }) => {
   console.log('✅ Slash command received');
   await ack();
 
-  try {
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view: {
-        type: 'modal',
-        callback_id: 'escalate_modal',
-        title: { type: 'plain_text', text: 'NOC Escalation' },
-        submit: { type: 'plain_text', text: 'Send' },
-        close: { type: 'plain_text', text: 'Cancel' },
-        blocks: [
-          {
-            type: 'input',
-            block_id: 'service_block',
-            label: { type: 'plain_text', text: 'Service' },
-            element: {
-              type: 'external_select',
-              action_id: 'service_input',
-              placeholder: { type: 'plain_text', text: 'Type 2+ letters...' },
-              min_query_length: 2,
-            },
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: 'modal',
+      callback_id: 'escalate_modal',
+      title: { type: 'plain_text', text: 'NOC Escalation' },
+      submit: { type: 'plain_text', text: 'Send' },
+      close: { type: 'plain_text', text: 'Cancel' },
+      blocks: [
+        {
+          type: 'input',
+          block_id: 'service_block',
+          label: { type: 'plain_text', text: 'Service' },
+          element: {
+            type: 'external_select',
+            action_id: 'service_input',
+            placeholder: { type: 'plain_text', text: 'Type 2+ letters...' },
+            min_query_length: 2,
           },
-          {
-            type: 'input',
-            block_id: 'summary_block',
-            label: { type: 'plain_text', text: 'Summary' },
-            element: {
-              type: 'plain_text_input',
-              action_id: 'summary_input',
-            },
+        },
+        {
+          type: 'input',
+          block_id: 'summary_block',
+          label: { type: 'plain_text', text: 'Summary' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'summary_input',
           },
-          {
-            type: 'input',
-            block_id: 'urgency_block',
-            label: { type: 'plain_text', text: 'Urgency' },
-            element: {
-              type: 'static_select',
-              action_id: 'urgency_input',
-              options: ['Low', 'Medium', 'High'].map(level => ({
-                text: { type: 'plain_text', text: level },
-                value: level.toLowerCase(),
-              })),
-            },
+        },
+        {
+          type: 'input',
+          block_id: 'urgency_block',
+          label: { type: 'plain_text', text: 'Urgency' },
+          element: {
+            type: 'static_select',
+            action_id: 'urgency_input',
+            options: ['Low', 'Medium', 'High'].map(level => ({
+              text: { type: 'plain_text', text: level },
+              value: level.toLowerCase(),
+            })),
           },
-        ],
-      },
-    });
-  } catch (err) {
-    console.error('❌ Modal open error:', err);
-  }
+        },
+      ],
+    },
+  });
 });
 
 app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   const searchTerm = options.value || '';
   console.log(`🔍 options() called: "${searchTerm}"`);
 
-  try {
-    const response = await axios.get('https://api.pagerduty.com/services', {
-      headers: {
-        Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-        Accept: 'application/vnd.pagerduty+json;version=2',
-      },
-      params: { query: searchTerm, limit: 25 },
-    });
+  const response = await axios.get('https://api.pagerduty.com/services', {
+    headers: {
+      Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
+      Accept: 'application/vnd.pagerduty+json;version=2',
+    },
+    params: { query: searchTerm, limit: 25 },
+  });
 
-    const services = response.data.services || [];
-    console.log(`✅ PD returned ${services.length} services`);
+  const services = response.data.services || [];
+  console.log(`✅ PD returned ${services.length} services`);
 
-    const formatted = services.map(s => ({
-      text: { type: 'plain_text', text: s.name },
-      value: s.id,
-    }));
+  const formatted = services.map(s => ({
+    text: { type: 'plain_text', text: s.name },
+    value: s.id,
+  }));
 
-    await ack({ options: formatted });
-
-  } catch (err) {
-    console.error('❌ PD fetch error:', err);
-    await ack({ options: [] });
-  }
+  await ack({ options: formatted });
 });
 
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
@@ -109,7 +99,9 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   console.log(`✅ Final: Service ID: ${serviceId}`);
   console.log(`✅ Final: Service Name: ${serviceName}`);
 
+  // 🔍 Try to get channel & on-call
   let channelToPost = null;
+  let oncallTag = '_No On-call_';
 
   try {
     const svc = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
@@ -120,18 +112,36 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     });
 
     const description = svc.data.service.description || '';
-    const channelMatch = description.match(/Communication Channel:\s*(#[\w\-_]+)/i);
-    channelToPost = channelMatch ? channelMatch[1] : null;
+    console.log(`✅ Service description: ${description}`);
+
+    // More robust regex
+    const channelMatch = description.match(/Communication Channel:?[\s\n]+(#[\w\-_]+)/i);
+    channelToPost = channelMatch ? channelMatch[1].trim() : null;
 
     console.log(`✅ Extracted channel: ${channelToPost}`);
 
+    // Get on-call same as before
+    const escalationId = svc.data.service.escalation_policy.id;
+    const oncalls = await axios.get('https://api.pagerduty.com/oncalls', {
+      headers: {
+        Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
+        Accept: 'application/vnd.pagerduty+json;version=2',
+      },
+      params: { escalation_policy_ids: [escalationId] },
+    });
+
+    const level1s = oncalls.data.oncalls.filter(o => o.escalation_level === 1);
+    const names = level1s.map(o => o.user.summary);
+    oncallTag = names.length ? names.map(n => `_${n}_`).join(', ') : '_No On-call_';
+
+    console.log(`✅ On-calls: ${oncallTag}`);
+
   } catch (err) {
-    console.error('❌ PD service fetch failed:', err);
+    console.error('❌ PD details error:', err);
   }
 
-  // If no channel found → prompt
   if (!channelToPost) {
-    console.log('❌ No channel found, opening fallback prompt');
+    console.log('❌ No channel → open fallback modal');
     await client.views.open({
       trigger_id: body.trigger_id,
       view: {
@@ -140,7 +150,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
         title: { type: 'plain_text', text: 'Provide Channel' },
         submit: { type: 'plain_text', text: 'Send' },
         close: { type: 'plain_text', text: 'Cancel' },
-        private_metadata: JSON.stringify({ serviceName, urgency, summary }),
+        private_metadata: JSON.stringify({ serviceName, urgency, summary, oncallTag }),
         blocks: [
           {
             type: 'input',
@@ -157,20 +167,19 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     return;
   }
 
-  // If channel found → post
   await client.chat.postMessage({
     channel: channelToPost,
     text: `:rotating_light: *Escalation*
 • Reporter: <@${userId}>
 • Service: ${serviceName}
 • Urgency: ${urgency}
-• Summary: ${summary}`,
+• Summary: ${summary}
+• On-call: ${oncallTag}`,
   });
 
   console.log(`✅ Posted to ${channelToPost}`);
 });
 
-// Fallback modal handler
 app.view('fallback_channel_modal', async ({ ack, view, body, client }) => {
   await ack();
 
@@ -185,7 +194,7 @@ app.view('fallback_channel_modal', async ({ ack, view, body, client }) => {
 • Service: ${meta.serviceName}
 • Urgency: ${meta.urgency}
 • Summary: ${meta.summary}
-• Channel provided manually: ${channelName}`,
+• On-call: ${meta.oncallTag}`,
   });
 
   console.log(`✅ Posted fallback to ${channelName}`);
@@ -194,5 +203,5 @@ app.view('fallback_channel_modal', async ({ ack, view, body, client }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation running on ${port}`);
+  console.log(`⚡️ noc_escalation running with robust channel + on-call on ${port}`);
 })();
