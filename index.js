@@ -12,7 +12,7 @@ const app = new App({
   receiver,
 });
 
-// Slash command opens the modal
+// Slash command → open modal
 app.command('/noc_escalation', async ({ ack, body, client }) => {
   console.log('✅ Slash command received');
   await ack();
@@ -39,15 +39,6 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
         },
         {
           type: 'input',
-          block_id: 'summary_block',
-          label: { type: 'plain_text', text: 'Summary' },
-          element: {
-            type: 'plain_text_input',
-            action_id: 'summary_input',
-          },
-        },
-        {
-          type: 'input',
           block_id: 'urgency_block',
           label: { type: 'plain_text', text: 'Urgency' },
           element: {
@@ -59,16 +50,26 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
             })),
           },
         },
+        {
+          type: 'input',
+          block_id: 'summary_block',
+          label: { type: 'plain_text', text: 'Summary' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'summary_input',
+          },
+        },
       ],
     },
   });
 });
 
-// Dynamic service search
+// External select handler
 app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   const search = options.value || '';
   console.log(`🔍 options() called: "${search}"`);
-  const response = await axios.get('https://api.pagerduty.com/services', {
+
+  const res = await axios.get('https://api.pagerduty.com/services', {
     headers: {
       Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
       Accept: 'application/vnd.pagerduty+json;version=2',
@@ -76,124 +77,105 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
     params: { query: search, limit: 25 },
   });
 
-  const services = response.data.services.map((s) => ({
+  const formatted = res.data.services.map((s) => ({
     text: { type: 'plain_text', text: s.name },
-    value: `${s.id}|${s.name}`,
+    value: `${s.id}:::${s.name}`,
   }));
 
-  console.log(`✅ PD returned ${services.length} services`);
-  await ack({ options: services });
+  console.log(`✅ PD returned ${formatted.length} services`);
+  await ack({ options: formatted });
 });
 
-// On submit
+// Modal submit handler
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
+  console.log('✅ Modal submitted');
+
   const userId = body.user.id;
 
-  const [serviceId, serviceName] =
-    view.state.values.service_block.service_input.selected_option?.value.split('|') || [];
-  const summary = view.state.values.summary_block.summary_input.value;
+  const selected = view.state.values.service_block.service_input.selected_option.value;
+  const [serviceId, serviceName] = selected.split(':::');
+
   const urgency = view.state.values.urgency_block.urgency_input.selected_option.text.text;
+  const summary = view.state.values.summary_block.summary_input.value;
 
   console.log(`✅ Final: Service ID: ${serviceId}`);
   console.log(`✅ Final: Service Name: ${serviceName}`);
 
-  let channel = null;
-
-  // 1) Try to extract channel from service description
-  const service = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
+  // 1️⃣ Lookup escalation policy
+  const serviceRes = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
     headers: {
       Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
       Accept: 'application/vnd.pagerduty+json;version=2',
     },
   });
 
-  const desc = service.data.service.description || '';
-  console.log(`✅ Service description: ${desc}`);
-  const match = desc.match(/Communication Channel:\s*(#\S+)/i);
-  if (match) {
-    channel = match[1].trim();
-  }
-  console.log(`✅ Extracted channel: ${channel}`);
+  const escalationPolicyId = serviceRes.data.service.escalation_policy?.id;
+  console.log(`✅ Final: Escalation policy: ${escalationPolicyId}`);
 
-  // 2) Get escalation policy & first-level on-calls
-  const escalationPolicyId = service.data.service.escalation_policy?.id;
-  const oncallsRes = await axios.get(`https://api.pagerduty.com/oncalls`, {
-    headers: {
-      Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-      Accept: 'application/vnd.pagerduty+json;version=2',
-    },
-    params: {
-      escalation_policy_ids: [escalationPolicyId],
-    },
-  });
+  let oncallTags = [];
 
-  const rawOncalls = oncallsRes.data.oncalls.filter((o) => o.escalation_level === 1);
-  console.log(`✅ On-calls raw: ${JSON.stringify(rawOncalls, null, 2)}`);
+  if (escalationPolicyId) {
+    const oncalls = await axios.get('https://api.pagerduty.com/oncalls', {
+      headers: {
+        Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
+        Accept: 'application/vnd.pagerduty+json;version=2',
+      },
+      params: { escalation_policy_ids: [escalationPolicyId] },
+    });
 
-  const mentions = [];
-  for (const oc of rawOncalls) {
-    const pdName = oc.user.summary;
-    const email = `${pdName.toLowerCase().replace(/ /g, '.')}@paramount.com`;
-    try {
-      const slackUser = await client.users.lookupByEmail({ email });
-      mentions.push(`<@${slackUser.user.id}>`);
-    } catch (err) {
-      mentions.push(`_${pdName}_`);
+    const levelOneUsers = oncalls.data.oncalls
+      .filter((o) => o.user && o.escalation_level === 1)
+      .map((o) => o.user.summary)
+      .filter((v, i, a) => a.indexOf(v) === i);
+
+    console.log(`✅ Final: Level 1 On-call users:`, levelOneUsers);
+
+    for (const name of levelOneUsers) {
+      const pdEmail = `${name.toLowerCase().replace(' ', '.')}@pluto.tv`;
+      const altEmail = pdEmail.replace('@pluto.tv', '@paramount.com');
+      let slackTag = null;
+
+      try {
+        const slackUser = await client.users.lookupByEmail({ email: pdEmail });
+        slackTag = `<@${slackUser.user.id}>`;
+        console.log(`✅ Found Slack match for ${name} via ${pdEmail}`);
+      } catch {
+        try {
+          const slackUser2 = await client.users.lookupByEmail({ email: altEmail });
+          slackTag = `<@${slackUser2.user.id}>`;
+          console.log(`✅ Found Slack fallback for ${name} via ${altEmail}`);
+        } catch {
+          console.log(`❌ No Slack match for ${name}`);
+        }
+      }
+
+      if (slackTag) {
+        oncallTags.push(slackTag);
+      }
     }
   }
-  const oncallMentions = mentions.join(', ');
-  console.log(`✅ Slack on-call mentions: ${oncallMentions}`);
 
-  // 3) If no channel, ask user
-  if (!channel) {
-    await client.views.open({
-      trigger_id: body.trigger_id,
-      view: {
-        type: 'modal',
-        callback_id: 'fallback_channel',
-        title: { type: 'plain_text', text: 'No Channel Found' },
-        submit: { type: 'plain_text', text: 'Send' },
-        close: { type: 'plain_text', text: 'Cancel' },
-        blocks: [
-          {
-            type: 'input',
-            block_id: 'fallback_channel_block',
-            label: { type: 'plain_text', text: 'Select Slack channel:' },
-            element: {
-              type: 'conversations_select',
-              action_id: 'channel_select',
-              default_to_current_conversation: false,
-            },
-          },
-        ],
-      },
-    });
+  const oncallText = oncallTags.length > 0 ? oncallTags.join(' ') : 'No current On-call';
 
-    receiver.router.post('/manual_escalation', async (req, res) => {
-      const channelId = req.body.payload.view.state.values.fallback_channel_block.channel_select.selected_conversation;
-      await client.chat.postMessage({
-        channel: channelId,
-        text: `:rotating_light: *Escalation*\n• Reporter: <@${userId}>\n• Service: ${serviceName}\n• Urgency: ${urgency}\n• Summary: ${summary}\n• On-call: ${oncallMentions}`,
-      });
-      res.send('');
-    });
+  const message = `:rotating_light: *Escalation*
+• Reporter: <@${userId}>
+• Service: ${serviceName}
+• Urgency: ${urgency}
+• Summary: ${summary}
+• On-call: ${oncallText}`;
 
-    return;
-  }
-
-  // 4) Post in channel if found
   await client.chat.postMessage({
-    channel,
-    text: `:rotating_light: *Escalation*\n• Reporter: <@${userId}>\n• Service: ${serviceName}\n• Urgency: ${urgency}\n• Summary: ${summary}\n• On-call: ${oncallMentions}`,
+    channel: '#noc-escalation-test',
+    text: message,
   });
 
-  console.log(`✅ Posted escalation to ${channel}`);
+  console.log('✅ Final escalation sent with LEVEL 1 on-calls only');
 });
 
-// Start
+// Start server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation running with final robust logic on ${port}`);
+  console.log(`⚡️ noc_escalation LEVEL 1 on-calls only running on ${port}`);
 })();
