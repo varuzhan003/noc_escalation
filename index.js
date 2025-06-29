@@ -2,6 +2,7 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 const axios = require('axios');
 
+// ExpressReceiver for Slack events
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
@@ -12,6 +13,7 @@ const app = new App({
   receiver,
 });
 
+// Slash command opens modal
 app.command('/noc_escalation', async ({ ack, body, client }) => {
   console.log('✅ Slash command received');
   await ack();
@@ -45,7 +47,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
             action_id: 'urgency_input',
             options: ['Low', 'Medium', 'High'].map(level => ({
               text: { type: 'plain_text', text: level },
-              value: level.toLowerCase(),
+              value: level.toLowerCase()
             })),
           },
         },
@@ -53,19 +55,22 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
           type: 'input',
           block_id: 'summary_block',
           label: { type: 'plain_text', text: 'Summary' },
-          element: { type: 'plain_text_input', action_id: 'summary_input' },
+          element: {
+            type: 'plain_text_input',
+            action_id: 'summary_input',
+          },
         },
       ],
     },
   });
 });
 
-// Load options dynamically
+// Options handler
 app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   const searchTerm = options.value || '';
   console.log(`🔍 options() called: "${searchTerm}"`);
 
-  const res = await axios.get('https://api.pagerduty.com/services', {
+  const response = await axios.get('https://api.pagerduty.com/services', {
     headers: {
       Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
       Accept: 'application/vnd.pagerduty+json;version=2',
@@ -73,77 +78,89 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
     params: { query: searchTerm, limit: 25 },
   });
 
-  console.log(`✅ PD returned ${res.data.services.length} services`);
-  const formatted = res.data.services.map(s => ({
+  const services = response.data.services || [];
+  console.log(`✅ PD returned ${services.length} services`);
+  const formatted = services.map(s => ({
     text: { type: 'plain_text', text: s.name },
-    value: `${s.id}|||${s.escalation_policy.id}`,
+    value: s.id,
   }));
 
   await ack({ options: formatted });
 });
 
 // Modal submit
-app.view('escalate_modal', async ({ ack, view, body, client }) => {
+app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
   await ack();
   console.log('✅ Modal submitted');
 
   const userId = body.user.id;
-  const selected = view.state.values.service_block.service_input.selected_option.value;
-  const [serviceId, escalationId] = selected.split('|||');
-  const urgency = view.state.values.urgency_block.urgency_input.selected_option.text.text;
+  const selectedServiceId = view.state.values.service_block.service_input.selected_option?.value || 'N/A';
+  const urgency = view.state.values.urgency_block.urgency_input.selected_option?.text?.text || 'N/A';
   const summary = view.state.values.summary_block.summary_input.value;
 
-  console.log(`✅ Final: Service ID: ${serviceId}`);
-  console.log(`✅ Final: Escalation policy: ${escalationId}`);
+  console.log(`✅ Final: Service ID: ${selectedServiceId}`);
 
-  // Get on-call user
-  const oncallRes = await axios.get('https://api.pagerduty.com/oncalls', {
-    headers: {
-      Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-      Accept: 'application/vnd.pagerduty+json;version=2',
-    },
-    params: { escalation_policy_ids: [escalationId] },
-  });
+  let slackMention = 'No current On-call';
 
-  const oncall = oncallRes.data.oncalls.find(o => o.schedule);
-  console.log('✅ Final: Real On-call:', oncall);
-
-  let slackMention = '_No current On-call_';
-
-  if (oncall && oncall.user && oncall.user.id) {
-    const pdUser = await axios.get(`https://api.pagerduty.com/users/${oncall.user.id}`, {
+  try {
+    const svc = await axios.get(`https://api.pagerduty.com/services/${selectedServiceId}`, {
       headers: {
         Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
         Accept: 'application/vnd.pagerduty+json;version=2',
       },
     });
 
-    const email = pdUser.data.user.email;
-    console.log('✅ Final: On-call email:', email);
+    const escalationId = svc.data.service?.escalation_policy?.id;
+    console.log(`✅ Final: Escalation policy: ${escalationId}`);
 
-    try {
-      const slackUser = await client.users.lookupByEmail({ email });
-      slackMention = `<@${slackUser.user.id}>`;
-    } catch (err) {
-      console.error('❌ Slack lookup failed:', err);
+    if (escalationId) {
+      const oncalls = await axios.get('https://api.pagerduty.com/oncalls', {
+        headers: {
+          Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
+          Accept: 'application/vnd.pagerduty+json;version=2',
+        },
+        params: { 'escalation_policy_ids[]': escalationId },
+      });
+
+      const oncall = oncalls.data.oncalls.find(o => o.schedule) || oncalls.data.oncalls[0];
+      console.log('✅ Final: Real On-call:', JSON.stringify(oncall, null, 2));
+
+      const oncallName = oncall.user.summary;
+      const pdEmail = `${oncallName.toLowerCase().replace(/ /g, '.')}@pluto.tv`;
+      const slackEmail = pdEmail.replace('@pluto.tv', '@paramount.com');
+
+      console.log(`✅ Final: On-call email: ${slackEmail}`);
+
+      try {
+        const slackUser = await client.users.lookupByEmail({ email: slackEmail });
+        slackMention = `<@${slackUser.user.id}>`;
+      } catch (err) {
+        console.error('❌ Email lookup failed, fallback:', err);
+        const slackUsers = await client.users.list();
+        const fallback = slackUsers.members.find(u =>
+          u.profile.real_name_normalized?.toLowerCase().includes(oncallName.toLowerCase())
+        );
+        if (fallback) {
+          slackMention = `<@${fallback.id}>`;
+          console.log(`✅ Fallback name match: ${fallback.profile.real_name}`);
+        }
+      }
     }
+  } catch (err) {
+    console.error('❌ Final fallback error:', err);
   }
-
-  const msg = `:rotating_light: *Escalation*\n• Reporter: <@${userId}>\n• Service: ${selected.split('|||')[0]}\n• Urgency: ${urgency}\n• Summary: ${summary}\n• On-call: ${slackMention}`;
 
   await client.chat.postMessage({
     channel: '#noc-escalation-test',
-    text: msg,
+    text: `:rotating_light: *Escalation*\n• Reporter: <@${userId}>\n• Service: ${selectedServiceId}\n• Urgency: ${urgency}\n• Summary: ${summary}\n• On-call: ${slackMention}`,
   });
 
   console.log('✅ Final escalation sent with on-call');
 });
 
-// Health check
-receiver.router.get('/', (req, res) => res.send('OK'));
-
+// Start
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation running with NAME MATCH on port ${port}`);
+  console.log(`⚡️ noc_escalation SMART running on ${port}`);
 })();
