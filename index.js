@@ -89,40 +89,44 @@ app.options({ action_id: 'channel_input' }, async ({ options, ack, client }) => 
   const search = options.value || '';
   console.log(`🔍 options() channels: "${search}"`);
 
-  const list = await client.conversations.list({
-    types: 'public_channel,private_channel',
-    exclude_archived: true,
-    limit: 1000,
-  });
+  try {
+    const result = await client.conversations.list({
+      types: 'public_channel,private_channel',
+      limit: 1000,
+    });
 
-  const filtered = list.channels
-    .filter((ch) => ch.name.includes(search))
-    .map((ch) => ({
-      text: { type: 'plain_text', text: `#${ch.name}` },
-      value: ch.id,
-    }))
-    .slice(0, 100); // Slack limit
+    const filtered = result.channels
+      .filter((c) => c.name.includes(search))
+      .map((c) => ({
+        text: { type: 'plain_text', text: `#${c.name}` },
+        value: c.id,
+      }));
 
-  console.log(`✅ Slack channels found: ${filtered.length}`);
-  await ack({ options: filtered });
+    console.log(`✅ Channels matched: ${filtered.length}`);
+    await ack({ options: filtered.slice(0, 100) });
+
+  } catch (err) {
+    console.error('❌ Channel list failed:', err);
+    await ack({ options: [] });
+  }
 });
 
-// Modal submit
+// Modal submit handler
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
   console.log('✅ Modal submitted');
 
   const userId = body.user.id;
 
-  const selected = view.state.values.service_block.service_input.selected_option.value;
-  const [serviceId, serviceName] = selected.split(':::');
+  const selectedService = view.state.values.service_block.service_input.selected_option.value;
+  const [serviceId, serviceName] = selectedService.split(':::');
 
-  const channelId = view.state.values.channel_block.channel_input.selected_option.value;
+  const selectedChannelId = view.state.values.channel_block.channel_input.selected_option.value;
   const summary = view.state.values.summary_block.summary_input.value;
 
   console.log(`✅ Final: Service ID: ${serviceId}`);
   console.log(`✅ Final: Service Name: ${serviceName}`);
-  console.log(`✅ Final: Channel ID: ${channelId}`);
+  console.log(`✅ Final: Channel ID: ${selectedChannelId}`);
 
   // Lookup escalation policy
   const serviceRes = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
@@ -151,7 +155,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       .map((o) => o.user.summary)
       .filter((v, i, a) => a.indexOf(v) === i);
 
-    console.log(`✅ Final: Level 1 On-call users:`, levelOneUsers);
+    console.log(`✅ Level 1 On-call users:`, levelOneUsers);
 
     for (const name of levelOneUsers) {
       const pdEmail = `${name.toLowerCase().replace(' ', '.')}@pluto.tv`;
@@ -161,20 +165,16 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       try {
         const slackUser = await client.users.lookupByEmail({ email: pdEmail });
         slackTag = `<@${slackUser.user.id}>`;
-        console.log(`✅ Found Slack match for ${name} via ${pdEmail}`);
       } catch {
         try {
           const slackUser2 = await client.users.lookupByEmail({ email: altEmail });
           slackTag = `<@${slackUser2.user.id}>`;
-          console.log(`✅ Found Slack fallback for ${name} via ${altEmail}`);
         } catch {
           console.log(`❌ No Slack match for ${name}`);
         }
       }
 
-      if (slackTag) {
-        oncallTags.push(slackTag);
-      }
+      if (slackTag) oncallTags.push(slackTag);
     }
   }
 
@@ -187,16 +187,16 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 • On-call: ${oncallText}`;
 
   await client.chat.postMessage({
-    channel: channelId,
+    channel: selectedChannelId,
     text: message,
   });
 
-  console.log('✅ Final escalation sent to selected channel with on-calls');
+  console.log(`✅ Final escalation sent to ${selectedChannelId}`);
 });
 
 // Start
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation CUSTOM CHANNEL running on ${port}`);
+  console.log(`⚡️ noc_escalation with channel select running on ${port}`);
 })();
