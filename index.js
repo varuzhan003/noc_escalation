@@ -2,7 +2,6 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 require('dotenv').config();
 const axios = require('axios');
 
-// ExpressReceiver for Slack events
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
   endpoints: '/slack/events',
@@ -13,7 +12,7 @@ const app = new App({
   receiver,
 });
 
-// Slash command opens modal
+// Slash command
 app.command('/noc_escalation', async ({ ack, body, client }) => {
   console.log('✅ Slash command received');
   await ack();
@@ -47,7 +46,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
             action_id: 'urgency_input',
             options: ['Low', 'Medium', 'High'].map(level => ({
               text: { type: 'plain_text', text: level },
-              value: level.toLowerCase()
+              value: level.toLowerCase(),
             })),
           },
         },
@@ -80,25 +79,29 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
 
   const services = response.data.services || [];
   console.log(`✅ PD returned ${services.length} services`);
+
   const formatted = services.map(s => ({
     text: { type: 'plain_text', text: s.name },
-    value: s.id,
+    value: `${s.id}:::${s.name}`,
   }));
 
   await ack({ options: formatted });
 });
 
 // Modal submit
-app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
+app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
   console.log('✅ Modal submitted');
 
   const userId = body.user.id;
-  const selectedServiceId = view.state.values.service_block.service_input.selected_option?.value || 'N/A';
+  const selectedValue = view.state.values.service_block.service_input.selected_option?.value || 'N/A';
   const urgency = view.state.values.urgency_block.urgency_input.selected_option?.text?.text || 'N/A';
   const summary = view.state.values.summary_block.summary_input.value;
 
+  // Split ID:::NAME
+  const [selectedServiceId, selectedServiceName] = selectedValue.split(':::');
   console.log(`✅ Final: Service ID: ${selectedServiceId}`);
+  console.log(`✅ Final: Service Name: ${selectedServiceName}`);
 
   let slackMention = 'No current On-call';
 
@@ -135,7 +138,7 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
         const slackUser = await client.users.lookupByEmail({ email: slackEmail });
         slackMention = `<@${slackUser.user.id}>`;
       } catch (err) {
-        console.error('❌ Email lookup failed, fallback:', err);
+        console.error('❌ Email lookup failed, fallback to name:', err);
         const slackUsers = await client.users.list();
         const fallback = slackUsers.members.find(u =>
           u.profile.real_name_normalized?.toLowerCase().includes(oncallName.toLowerCase())
@@ -152,7 +155,7 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
 
   await client.chat.postMessage({
     channel: '#noc-escalation-test',
-    text: `:rotating_light: *Escalation*\n• Reporter: <@${userId}>\n• Service: ${selectedServiceId}\n• Urgency: ${urgency}\n• Summary: ${summary}\n• On-call: ${slackMention}`,
+    text: `:rotating_light: *Escalation*\n• Reporter: <@${userId}>\n• Service: ${selectedServiceName}\n• Urgency: ${urgency}\n• Summary: ${summary}\n• On-call: ${slackMention}`,
   });
 
   console.log('✅ Final escalation sent with on-call');
@@ -162,5 +165,5 @@ app.view('escalate_modal', async ({ ack, view, body, client, logger }) => {
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation SMART running on ${port}`);
+  console.log(`⚡️ noc_escalation FIXED NAME running on ${port}`);
 })();
