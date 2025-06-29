@@ -39,15 +39,13 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
         },
         {
           type: 'input',
-          block_id: 'urgency_block',
-          label: { type: 'plain_text', text: 'Urgency' },
+          block_id: 'channel_block',
+          label: { type: 'plain_text', text: 'Channel to escalate' },
           element: {
-            type: 'static_select',
-            action_id: 'urgency_input',
-            options: ['Low', 'Medium', 'High'].map((level) => ({
-              text: { type: 'plain_text', text: level },
-              value: level.toLowerCase(),
-            })),
+            type: 'external_select',
+            action_id: 'channel_input',
+            placeholder: { type: 'plain_text', text: 'Search channels...' },
+            min_query_length: 1,
           },
         },
         {
@@ -64,10 +62,10 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
   });
 });
 
-// External select handler
+// External select for services
 app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   const search = options.value || '';
-  console.log(`🔍 options() called: "${search}"`);
+  console.log(`🔍 options() services: "${search}"`);
 
   const res = await axios.get('https://api.pagerduty.com/services', {
     headers: {
@@ -86,7 +84,30 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   await ack({ options: formatted });
 });
 
-// Modal submit handler
+// External select for channels
+app.options({ action_id: 'channel_input' }, async ({ options, ack, client }) => {
+  const search = options.value || '';
+  console.log(`🔍 options() channels: "${search}"`);
+
+  const list = await client.conversations.list({
+    types: 'public_channel,private_channel',
+    exclude_archived: true,
+    limit: 1000,
+  });
+
+  const filtered = list.channels
+    .filter((ch) => ch.name.includes(search))
+    .map((ch) => ({
+      text: { type: 'plain_text', text: `#${ch.name}` },
+      value: ch.id,
+    }))
+    .slice(0, 100); // Slack limit
+
+  console.log(`✅ Slack channels found: ${filtered.length}`);
+  await ack({ options: filtered });
+});
+
+// Modal submit
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
   console.log('✅ Modal submitted');
@@ -96,13 +117,14 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   const selected = view.state.values.service_block.service_input.selected_option.value;
   const [serviceId, serviceName] = selected.split(':::');
 
-  const urgency = view.state.values.urgency_block.urgency_input.selected_option.text.text;
+  const channelId = view.state.values.channel_block.channel_input.selected_option.value;
   const summary = view.state.values.summary_block.summary_input.value;
 
   console.log(`✅ Final: Service ID: ${serviceId}`);
   console.log(`✅ Final: Service Name: ${serviceName}`);
+  console.log(`✅ Final: Channel ID: ${channelId}`);
 
-  // 1️⃣ Lookup escalation policy
+  // Lookup escalation policy
   const serviceRes = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
     headers: {
       Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
@@ -161,21 +183,20 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   const message = `:rotating_light: *Escalation*
 • Reporter: <@${userId}>
 • Service: ${serviceName}
-• Urgency: ${urgency}
 • Summary: ${summary}
 • On-call: ${oncallText}`;
 
   await client.chat.postMessage({
-    channel: '#noc-escalation-test',
+    channel: channelId,
     text: message,
   });
 
-  console.log('✅ Final escalation sent with LEVEL 1 on-calls only');
+  console.log('✅ Final escalation sent to selected channel with on-calls');
 });
 
-// Start server
+// Start
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation LEVEL 1 on-calls only running on ${port}`);
+  console.log(`⚡️ noc_escalation CUSTOM CHANNEL running on ${port}`);
 })();
