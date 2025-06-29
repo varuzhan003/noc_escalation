@@ -40,12 +40,12 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
         {
           type: 'input',
           block_id: 'channel_block',
-          label: { type: 'plain_text', text: 'Channel to escalate' },
+          label: { type: 'plain_text', text: 'Escalate to Channel' },
           element: {
             type: 'external_select',
             action_id: 'channel_input',
-            placeholder: { type: 'plain_text', text: 'Search channels...' },
-            min_query_length: 1,
+            placeholder: { type: 'plain_text', text: 'Type 2+ letters...' },
+            min_query_length: 2,
           },
         },
         {
@@ -62,7 +62,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
   });
 });
 
-// External select for services
+// External select for SERVICES
 app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   const search = options.value || '';
   console.log(`🔍 options() services: "${search}"`);
@@ -84,31 +84,35 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   await ack({ options: formatted });
 });
 
-// External select for channels
+// External select for CHANNELS — WITH PAGINATION
 app.options({ action_id: 'channel_input' }, async ({ options, ack, client }) => {
-  const search = options.value || '';
+  const search = options.value.toLowerCase();
   console.log(`🔍 options() channels: "${search}"`);
 
-  try {
-    const result = await client.conversations.list({
-      types: 'public_channel,private_channel',
+  let allChannels = [];
+  let cursor;
+
+  do {
+    const res = await client.conversations.list({
+      types: 'public_channel',
       limit: 1000,
+      cursor: cursor,
     });
 
-    const filtered = result.channels
-      .filter((c) => c.name.includes(search))
-      .map((c) => ({
-        text: { type: 'plain_text', text: `#${c.name}` },
-        value: c.id,
-      }));
+    allChannels.push(...res.channels);
+    cursor = res.response_metadata?.next_cursor;
+  } while (cursor);
 
-    console.log(`✅ Channels matched: ${filtered.length}`);
-    await ack({ options: filtered.slice(0, 100) });
+  const filtered = allChannels
+    .filter((c) => c.name.includes(search))
+    .slice(0, 100)
+    .map((c) => ({
+      text: { type: 'plain_text', text: `#${c.name}` },
+      value: c.id,
+    }));
 
-  } catch (err) {
-    console.error('❌ Channel list failed:', err);
-    await ack({ options: [] });
-  }
+  console.log(`✅ Channels found: ${filtered.length}`);
+  await ack({ options: filtered });
 });
 
 // Modal submit handler
@@ -118,15 +122,15 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 
   const userId = body.user.id;
 
-  const selectedService = view.state.values.service_block.service_input.selected_option.value;
-  const [serviceId, serviceName] = selectedService.split(':::');
+  const selected = view.state.values.service_block.service_input.selected_option.value;
+  const [serviceId, serviceName] = selected.split(':::');
 
-  const selectedChannelId = view.state.values.channel_block.channel_input.selected_option.value;
+  const channelId = view.state.values.channel_block.channel_input.selected_option.value;
   const summary = view.state.values.summary_block.summary_input.value;
 
   console.log(`✅ Final: Service ID: ${serviceId}`);
   console.log(`✅ Final: Service Name: ${serviceName}`);
-  console.log(`✅ Final: Channel ID: ${selectedChannelId}`);
+  console.log(`✅ Final: Channel ID: ${channelId}`);
 
   // Lookup escalation policy
   const serviceRes = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
@@ -155,7 +159,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       .map((o) => o.user.summary)
       .filter((v, i, a) => a.indexOf(v) === i);
 
-    console.log(`✅ Level 1 On-call users:`, levelOneUsers);
+    console.log(`✅ Final: Level 1 On-call users:`, levelOneUsers);
 
     for (const name of levelOneUsers) {
       const pdEmail = `${name.toLowerCase().replace(' ', '.')}@pluto.tv`;
@@ -165,16 +169,20 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       try {
         const slackUser = await client.users.lookupByEmail({ email: pdEmail });
         slackTag = `<@${slackUser.user.id}>`;
+        console.log(`✅ Found Slack for ${name} → ${pdEmail}`);
       } catch {
         try {
           const slackUser2 = await client.users.lookupByEmail({ email: altEmail });
           slackTag = `<@${slackUser2.user.id}>`;
+          console.log(`✅ Found Slack fallback for ${name} → ${altEmail}`);
         } catch {
-          console.log(`❌ No Slack match for ${name}`);
+          console.log(`❌ No Slack found for ${name}`);
         }
       }
 
-      if (slackTag) oncallTags.push(slackTag);
+      if (slackTag) {
+        oncallTags.push(slackTag);
+      }
     }
   }
 
@@ -187,16 +195,16 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 • On-call: ${oncallText}`;
 
   await client.chat.postMessage({
-    channel: selectedChannelId,
+    channel: channelId,
     text: message,
   });
 
-  console.log(`✅ Final escalation sent to ${selectedChannelId}`);
+  console.log('✅ Escalation posted with LEVEL 1 on-calls to selected channel');
 });
 
-// Start
+// Start server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation with channel select running on ${port}`);
+  console.log(`⚡️ noc_escalation FINAL with full channel select on ${port}`);
 })();
