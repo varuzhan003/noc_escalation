@@ -124,14 +124,14 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       params: { escalation_policy_ids: [escalationPolicyId] },
     });
 
-    const uniqueUsers = oncalls.data.oncalls
-      .filter((o) => o.user)
+    const levelOneUsers = oncalls.data.oncalls
+      .filter((o) => o.user && o.escalation_level === 1)
       .map((o) => o.user.summary)
-      .filter((v, i, a) => a.indexOf(v) === i); // unique names
+      .filter((v, i, a) => a.indexOf(v) === i);
 
-    console.log(`✅ Final: Real On-call users:`, uniqueUsers);
+    console.log(`✅ Final: Level 1 On-call users:`, levelOneUsers);
 
-    for (const name of uniqueUsers) {
+    for (const name of levelOneUsers) {
       const pdEmail = `${name.toLowerCase().replace(' ', '.')}@pluto.tv`;
       const altEmail = pdEmail.replace('@pluto.tv', '@paramount.com');
       let slackTag = null;
@@ -144,7 +144,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
         try {
           const slackUser2 = await client.users.lookupByEmail({ email: altEmail });
           slackTag = `<@${slackUser2.user.id}>`;
-          console.log(`✅ Found Slack fallback match for ${name} via ${altEmail}`);
+          console.log(`✅ Found Slack fallback for ${name} via ${altEmail}`);
         } catch {
           console.log(`❌ No Slack match for ${name}`);
         }
@@ -170,12 +170,12 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     text: message,
   });
 
-  console.log('✅ Final escalation sent with multiple on-call support');
+  console.log('✅ Final escalation sent with LEVEL 1 on-calls only');
 });
 
 // Start server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation with multi-oncall fallback running on ${port}`);
+  console.log(`⚡️ noc_escalation LEVEL 1 on-calls only running on ${port}`);
 })();
