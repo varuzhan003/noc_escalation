@@ -24,7 +24,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
     view: {
       type: 'modal',
       callback_id: 'escalate_modal',
-      private_metadata: body.user_id,
+      private_metadata: body.user_id, // store reporter id
       title: { type: 'plain_text', text: 'NOC Escalation' },
       submit: { type: 'plain_text', text: 'Send' },
       close: { type: 'plain_text', text: 'Cancel' },
@@ -91,17 +91,20 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   await ack({ options: formatted });
 });
 
-// Channel options
+// Channel options — user’s channels only
 app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client }) => {
   const search = (options.value || '').toLowerCase();
   const reporterId = body.view.private_metadata;
-  console.log(`🔍 options() channels for user ${reporterId}: "${search}"`);
+  console.log(`🔍 options() channels for ${reporterId}: "${search}"`);
 
-  if (search.length < 3) return ack({ options: [] });
+  if (search.length < 3) {
+    return ack({ options: [] });
+  }
 
   let userChannels = userChannelCache.get(reporterId);
+
   if (!userChannels) {
-    console.log(`⏳ Fetching channels for user ${reporterId}`);
+    console.log(`⏳ Fetching channels for ${reporterId}`);
     const userConvos = await client.users.conversations({
       user: reporterId,
       types: 'public_channel,private_channel',
@@ -125,14 +128,11 @@ app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client 
       value: c.id,
     }));
 
-  if (filtered.length === 0) {
-    console.log(`⚠️ No channels found for search "${search}"`);
-  }
-
+  console.log(`✅ Channels filtered: ${filtered.length}`);
   await ack({ options: filtered });
 });
 
-// Submit handler
+// Modal submit
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
   console.log('✅ Modal submitted');
@@ -154,7 +154,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     },
   });
   const escalationPolicyId = serviceRes.data.service.escalation_policy?.id;
-  console.log(`✅ Final: Escalation policy: ${escalationPolicyId}`);
+  console.log(`✅ Escalation policy: ${escalationPolicyId}`);
 
   let oncallTags = [];
 
@@ -172,7 +172,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       .map((o) => o.user.summary)
       .filter((v, i, a) => a.indexOf(v) === i);
 
-    console.log(`✅ Final: Level 1 On-call users:`, levelOneUsers);
+    console.log(`✅ Level 1 On-calls:`, levelOneUsers);
 
     for (const name of levelOneUsers) {
       const pdEmail = `${name.toLowerCase().replace(' ', '.')}@pluto.tv`;
@@ -208,12 +208,12 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     text: message,
   });
 
-  console.log('✅ Escalation sent ✅');
+  console.log('✅ Escalation posted to selected channel');
 });
 
-// Start
+// Start server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation with user channel checks running on ${port}`);
+  console.log(`⚡️ noc_escalation running on ${port}`);
 })();
