@@ -32,7 +32,8 @@ async function getDatadogDashboardUrl(serviceName) {
     );
 
     if (match) {
-      return match.url || `https://app.datadoghq.com/dashboard/${match.id}`;
+      // Always return full URL
+      return `https://app.datadoghq.com${match.url}`;
     }
   } catch (err) {
     console.log(`❌ Error fetching Datadog dashboards: ${err.message}`);
@@ -202,14 +203,14 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       params: { escalation_policy_ids: [escalationPolicyId] },
     });
 
-    const levelOneUsers = oncalls.data.oncalls
-      .filter((o) => o.user && o.escalation_level === 1)
-      .map((o) => o.user.email) // safer: use email directly
+    const levelOneEmails = oncalls.data.oncalls
+      .filter((o) => o.user && o.escalation_level === 1 && o.user.email)
+      .map((o) => o.user.email.toLowerCase())
       .filter((v, i, a) => a.indexOf(v) === i);
 
-    console.log(`✅ Level 1 On-call emails:`, levelOneUsers);
+    console.log(`✅ Level 1 On-call emails:`, levelOneEmails);
 
-    for (const email of levelOneUsers) {
+    for (const email of levelOneEmails) {
       let slackTag = null;
       try {
         const slackUser = await client.users.lookupByEmail({ email });
