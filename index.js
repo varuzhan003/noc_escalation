@@ -24,7 +24,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
     view: {
       type: 'modal',
       callback_id: 'escalate_modal',
-      private_metadata: body.user_id, // ✅ Correct field!
+      private_metadata: body.user_id,
       title: { type: 'plain_text', text: 'NOC Escalation' },
       submit: { type: 'plain_text', text: 'Send' },
       close: { type: 'plain_text', text: 'Cancel' },
@@ -50,6 +50,10 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
             placeholder: { type: 'plain_text', text: 'Type 3+ letters...' },
             min_query_length: 3,
           },
+          hint: {
+            type: 'plain_text',
+            text: 'If you don’t see your channel: join it first. For private channels, also `/invite @noc_escalation` there.',
+          },
         },
         {
           type: 'input',
@@ -65,7 +69,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
   });
 });
 
-// Service options handler
+// Service options
 app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   const search = options.value || '';
   console.log(`🔍 options() services: "${search}"`);
@@ -87,18 +91,15 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   await ack({ options: formatted });
 });
 
-// Channel options handler — only channels user is in
+// Channel options
 app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client }) => {
   const search = (options.value || '').toLowerCase();
   const reporterId = body.view.private_metadata;
   console.log(`🔍 options() channels for user ${reporterId}: "${search}"`);
 
-  if (search.length < 3) {
-    return ack({ options: [] });
-  }
+  if (search.length < 3) return ack({ options: [] });
 
   let userChannels = userChannelCache.get(reporterId);
-
   if (!userChannels) {
     console.log(`⏳ Fetching channels for user ${reporterId}`);
     const userConvos = await client.users.conversations({
@@ -112,7 +113,7 @@ app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client 
     }));
     userChannelCache.set(reporterId, userChannels);
     setTimeout(() => userChannelCache.delete(reporterId), 5 * 60 * 1000);
-    console.log(`✅ Cached ${userChannels.length} channels for user`);
+    console.log(`✅ Cached ${userChannels.length} channels`);
   }
 
   const filtered = userChannels
@@ -124,11 +125,14 @@ app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client 
       value: c.id,
     }));
 
-  console.log(`✅ Channels filtered: ${filtered.length}`);
+  if (filtered.length === 0) {
+    console.log(`⚠️ No channels found for search "${search}"`);
+  }
+
   await ack({ options: filtered });
 });
 
-// Modal submit handler
+// Submit handler
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
   console.log('✅ Modal submitted');
@@ -204,12 +208,12 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     text: message,
   });
 
-  console.log('✅ Escalation posted only to user’s channel');
+  console.log('✅ Escalation sent ✅');
 });
 
-// Start server
+// Start
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation — only user’s channels running on ${port}`);
+  console.log(`⚡️ noc_escalation with user channel checks running on ${port}`);
 })();
