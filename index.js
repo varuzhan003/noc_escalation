@@ -14,6 +14,32 @@ const app = new App({
 
 const userChannelCache = new Map();
 
+// Helper: Get Datadog Dashboard by Service Name
+async function getDatadogDashboardUrl(serviceName) {
+  try {
+    const dashboards = await axios.get(
+      'https://api.datadoghq.com/api/v1/dashboard',
+      {
+        headers: {
+          'DD-API-KEY': process.env.DATADOG_API_KEY,
+          'DD-APPLICATION-KEY': process.env.DATADOG_APP_KEY,
+        },
+      }
+    );
+
+    const match = dashboards.data.dashboards.find((d) =>
+      d.title.toLowerCase().includes(serviceName.toLowerCase())
+    );
+
+    if (match) {
+      return match.url || `https://app.datadoghq.com/dashboard/${match.id}`;
+    }
+  } catch (err) {
+    console.log(`❌ Error fetching Datadog dashboards: ${err.message}`);
+  }
+  return 'No dashboard found.';
+}
+
 // Slash command → open modal
 app.command('/noc_escalation', async ({ ack, body, client }) => {
   console.log('✅ Slash command received');
@@ -74,7 +100,7 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
   });
 });
 
-// Service options handler
+// Service search
 app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   const search = options.value || '';
   console.log(`🔍 options() services: "${search}"`);
@@ -96,7 +122,7 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   await ack({ options: formatted });
 });
 
-// Channel options handler — only channels user is in
+// Channel search for user's joined channels
 app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client }) => {
   const search = (options.value || '').toLowerCase();
   const reporterId = body.view.private_metadata;
@@ -137,7 +163,7 @@ app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client 
   await ack({ options: filtered });
 });
 
-// Modal submit handler
+// Modal submit
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
   console.log('✅ Modal submitted');
@@ -152,6 +178,10 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   console.log(`✅ Final: Service Name: ${serviceName}`);
   console.log(`✅ Final: Channel ID: ${channelId}`);
 
+  // Datadog dashboard lookup
+  const dashboardLink = await getDatadogDashboardUrl(serviceName);
+  console.log(`✅ Dashboard Link: ${dashboardLink}`);
+
   const serviceRes = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
     headers: {
       Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
@@ -159,7 +189,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     },
   });
   const escalationPolicyId = serviceRes.data.service.escalation_policy?.id;
-  console.log(`✅ Escalation policy: ${escalationPolicyId}`);
+  console.log(`✅ Final: Escalation policy: ${escalationPolicyId}`);
 
   let oncallTags = [];
 
@@ -172,35 +202,22 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
       params: { escalation_policy_ids: [escalationPolicyId] },
     });
 
-    const levelOne = oncalls.data.oncalls.filter((o) => o.user && o.escalation_level === 1);
+    const levelOneUsers = oncalls.data.oncalls
+      .filter((o) => o.user && o.escalation_level === 1)
+      .map((o) => o.user.email) // safer: use email directly
+      .filter((v, i, a) => a.indexOf(v) === i);
 
-    for (const oncall of levelOne) {
-      const userId = oncall.user.id;
+    console.log(`✅ Level 1 On-call emails:`, levelOneUsers);
 
+    for (const email of levelOneUsers) {
+      let slackTag = null;
       try {
-        const pdUser = await axios.get(`https://api.pagerduty.com/users/${userId}`, {
-          headers: {
-            Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
-            Accept: 'application/vnd.pagerduty+json;version=2',
-          },
-        });
-
-        const realEmail = pdUser.data.user.email;
-        let slackTag = null;
-
-        try {
-          const slackUser = await client.users.lookupByEmail({ email: realEmail });
-          slackTag = `<@${slackUser.user.id}>`;
-          console.log(`✅ Exact match: ${realEmail}`);
-        } catch {
-          console.log(`❌ Slack user not found: ${realEmail}`);
-        }
-
-        if (slackTag) oncallTags.push(slackTag);
-
-      } catch (err) {
-        console.log(`❌ Failed to fetch PD user details for ${userId}`);
+        const slackUser = await client.users.lookupByEmail({ email });
+        slackTag = `<@${slackUser.user.id}>`;
+      } catch {
+        console.log(`❌ No Slack match for ${email}`);
       }
+      if (slackTag) oncallTags.push(slackTag);
     }
   }
 
@@ -210,6 +227,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 • Reporter: <@${userId}>
 • Service: ${serviceName}
 • Summary: ${summary}
+• Service Dashboard: ${dashboardLink}
 • On-call: ${oncallText}`;
 
   await client.chat.postMessage({
@@ -217,12 +235,12 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
     text: message,
   });
 
-  console.log('✅ Final escalation sent with real PD user emails resolved');
+  console.log('✅ Escalation posted!');
 });
 
 // Start server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
-  console.log(`⚡️ noc_escalation running with robust on-call emails on ${port}`);
+  console.log(`⚡️ noc_escalation bot running on ${port}`);
 })();
