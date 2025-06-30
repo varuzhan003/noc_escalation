@@ -39,6 +39,13 @@ async function getDatadogDashboardUrl(serviceName) {
   return 'No dashboard found.';
 }
 
+function getDatadogErrorLogsUrl(serviceName) {
+  const encodedQuery = encodeURIComponent(`service:${serviceName} status:error`);
+  const now = Date.now();
+  const oneHourAgo = now - 60 * 60 * 1000;
+  return `https://app.datadoghq.com/logs?query=${encodedQuery}&from_ts=${oneHourAgo}&to_ts=${now}&live=true`;
+}
+
 app.command('/noc_escalation', async ({ ack, body, client }) => {
   console.log('✅ Slash command received');
   await ack();
@@ -174,7 +181,9 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   console.log(`✅ Final: Channel ID: ${channelId}`);
 
   const dashboardLink = await getDatadogDashboardUrl(serviceName);
+  const errorLogsLink = getDatadogErrorLogsUrl(serviceName);
   console.log(`✅ Dashboard Link: ${dashboardLink}`);
+  console.log(`✅ Error Logs Link: ${errorLogsLink}`);
 
   const serviceRes = await axios.get(`https://api.pagerduty.com/services/${serviceId}`, {
     headers: {
@@ -193,18 +202,16 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
         Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
         Accept: 'application/vnd.pagerduty+json;version=2',
       },
-      params: {
-        escalation_policy_ids: [escalationPolicyId],
-      },
+      params: { escalation_policy_ids: [escalationPolicyId] },
     });
 
     for (const oncall of oncalls.data.oncalls) {
       if (!oncall.user || oncall.escalation_level !== 1) continue;
 
-      const userId = oncall.user.id;
+      const pdUserId = oncall.user.id;
 
       try {
-        const pdUser = await axios.get(`https://api.pagerduty.com/users/${userId}`, {
+        const pdUser = await axios.get(`https://api.pagerduty.com/users/${pdUserId}`, {
           headers: {
             Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
             Accept: 'application/vnd.pagerduty+json;version=2',
@@ -224,7 +231,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 
         if (slackTag) oncallTags.push(slackTag);
       } catch (err) {
-        console.log(`❌ Failed to fetch PD user ${userId}`, err);
+        console.log(`❌ Failed to fetch PD user ${pdUserId}`, err);
       }
     }
   }
@@ -236,6 +243,7 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
 • Service: ${serviceName}
 • Summary: ${summary}
 • Service Dashboard: ${dashboardLink}
+• Service Error Logs: ${errorLogsLink}
 • On-call: ${oncallText}`;
 
   await client.chat.postMessage({
