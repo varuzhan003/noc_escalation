@@ -14,7 +14,6 @@ const app = new App({
 
 const userChannelCache = new Map();
 
-// Helper: Get Datadog Dashboard by Service Name
 async function getDatadogDashboardUrl(serviceName) {
   try {
     const dashboards = await axios.get(
@@ -32,7 +31,6 @@ async function getDatadogDashboardUrl(serviceName) {
     );
 
     if (match) {
-      // Always return full URL
       return `https://app.datadoghq.com${match.url}`;
     }
   } catch (err) {
@@ -41,7 +39,6 @@ async function getDatadogDashboardUrl(serviceName) {
   return 'No dashboard found.';
 }
 
-// Slash command → open modal
 app.command('/noc_escalation', async ({ ack, body, client }) => {
   console.log('✅ Slash command received');
   await ack();
@@ -101,7 +98,6 @@ app.command('/noc_escalation', async ({ ack, body, client }) => {
   });
 });
 
-// Service search
 app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   const search = options.value || '';
   console.log(`🔍 options() services: "${search}"`);
@@ -123,7 +119,6 @@ app.options({ action_id: 'service_input' }, async ({ options, ack }) => {
   await ack({ options: formatted });
 });
 
-// Channel search for user's joined channels
 app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client }) => {
   const search = (options.value || '').toLowerCase();
   const reporterId = body.view.private_metadata;
@@ -164,7 +159,6 @@ app.options({ action_id: 'channel_input' }, async ({ options, body, ack, client 
   await ack({ options: filtered });
 });
 
-// Modal submit
 app.view('escalate_modal', async ({ ack, view, body, client }) => {
   await ack();
   console.log('✅ Modal submitted');
@@ -179,7 +173,6 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   console.log(`✅ Final: Service Name: ${serviceName}`);
   console.log(`✅ Final: Channel ID: ${channelId}`);
 
-  // Datadog dashboard lookup
   const dashboardLink = await getDatadogDashboardUrl(serviceName);
   console.log(`✅ Dashboard Link: ${dashboardLink}`);
 
@@ -200,25 +193,39 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
         Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
         Accept: 'application/vnd.pagerduty+json;version=2',
       },
-      params: { escalation_policy_ids: [escalationPolicyId] },
+      params: {
+        escalation_policy_ids: [escalationPolicyId],
+      },
     });
 
-    const levelOneEmails = oncalls.data.oncalls
-      .filter((o) => o.user && o.escalation_level === 1 && o.user.email)
-      .map((o) => o.user.email.toLowerCase())
-      .filter((v, i, a) => a.indexOf(v) === i);
+    for (const oncall of oncalls.data.oncalls) {
+      if (!oncall.user || oncall.escalation_level !== 1) continue;
 
-    console.log(`✅ Level 1 On-call emails:`, levelOneEmails);
+      const userId = oncall.user.id;
 
-    for (const email of levelOneEmails) {
-      let slackTag = null;
       try {
-        const slackUser = await client.users.lookupByEmail({ email });
-        slackTag = `<@${slackUser.user.id}>`;
-      } catch {
-        console.log(`❌ No Slack match for ${email}`);
+        const pdUser = await axios.get(`https://api.pagerduty.com/users/${userId}`, {
+          headers: {
+            Authorization: `Token token=${process.env.PAGERDUTY_API_KEY}`,
+            Accept: 'application/vnd.pagerduty+json;version=2',
+          },
+        });
+
+        const realEmail = pdUser.data.user.email;
+        let slackTag = null;
+
+        try {
+          const slackUser = await client.users.lookupByEmail({ email: realEmail });
+          slackTag = `<@${slackUser.user.id}>`;
+          console.log(`✅ Exact email match for ${realEmail}`);
+        } catch {
+          console.log(`❌ Slack email not found: ${realEmail}`);
+        }
+
+        if (slackTag) oncallTags.push(slackTag);
+      } catch (err) {
+        console.log(`❌ Failed to fetch PD user ${userId}`, err);
       }
-      if (slackTag) oncallTags.push(slackTag);
     }
   }
 
@@ -239,7 +246,6 @@ app.view('escalate_modal', async ({ ack, view, body, client }) => {
   console.log('✅ Escalation posted!');
 });
 
-// Start server
 (async () => {
   const port = process.env.PORT || 3000;
   await app.start(port);
